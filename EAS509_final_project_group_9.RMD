@@ -1,0 +1,160 @@
+
+
+```{r setup, warning=F, message=F,echo=F}
+library(tibble)
+library(dplyr)
+library(tidyr)
+library(readr)
+library(lubridate)
+library(ggplot2)
+library(ggfortify)
+
+# tsibble: tidy temporal data frames and tools
+library(tsibble)
+
+# fable (forecast table)
+library(fable)
+
+# fabletools - provides tools for building modelling packages, with a focus on time series forecasting
+library(fabletools)
+
+# Feature Extraction and Statistics for Time Series in tsibble format
+library(feasts)
+
+# tsibbledata: used datasets for example global_economy
+library(tsibbledata)
+
+library(fpp3)
+
+library(zoo) # for yearmon
+library(lubridate)
+
+library(cowplot)
+```
+
+
+1.Read Data
+```{r}
+
+NY_LandTemperatures <- readr::read_csv("GlobalLandTemperaturesByMajorCity_.csv") %>%mutate(mon_year = yearmonth(date)) %>%select(-date) %>%
+  as_tsibble(index = mon_year)
+
+NY_LandTemperatures %>% head()
+```
+
+Plot the time series of sales of product A. Can you identify seasonal fluctuations and/or a trend-cycle
+
+```{r}
+NY_LandTemperatures %>% autoplot() + ggtitle("Time Series New York average temp ") + ylab("Temp")+ xlab("Month-year")
+
+NY_LandTemperatures %>% gg_season(avg_temp, labels = "both") +  labs(y = "Temp", x = 'Month year')+ ggtitle("Seasonal plot: New York average tem")
+
+NY_LandTemperatures %>%gg_subseries(avg_temp) + labs(y = "Temp",x = 'Month year', title = "Subseries plot")
+
+gg_season(NY_LandTemperatures, polar = TRUE, )+ labs(y = "Temp",x = 'Month year', title = "Polar season plot")
+
+
+```
+
+
+```{r}
+NY_LandTemperatures %>% model(classical_decomposition(avg_temp, type='m')) %>% components() %>% autoplot()+ labs( x = 'Month year',title = "Classical Multiplicative decomposition")+theme(plot.title = element_text(hjust = 0.5,face = "bold"))
+```
+
+
+```{r, train_test_split}
+NY_LandTemperatures_whole <- NY_LandTemperatures
+NY_LandTemperatures_train <- NY_LandTemperatures %>% filter(mon_year < yearmonth("2007-01")) 
+```
+
+
+
+```{r}
+# simple models
+fit_simple_methods <- NY_LandTemperatures_train %>% model(Mean = MEAN(avg_temp),Naive = NAIVE(avg_temp),Seasonal_Naive = SNAIVE(avg_temp),Drift = RW(avg_temp ~ drift()))
+
+fit_simple_methods  %>% forecast(h = 72) %>% autoplot(NY_LandTemperatures_train,level = NULL)+ labs( x = "Month year", y = "Temperature", title = "Simple Models Forecast" )+theme(plot.title = element_text(hjust = 0.5,face = "bold"))
+```
+
+
+```{r, simple_models_accuracy}
+accuracy(fit_simple_methods)
+accuracy(fit_simple_methods %>% forecast(h = 72),NY_LandTemperatures)
+```
+
+
+```{r, 90_confidence_interval_plot}
+fit_simple_methods %>% forecast(h = 72) %>% autoplot(NY_LandTemperatures_train,level = 90) + facet_wrap(~.model)+labs( x = 'Month year',y = "Temperature", title = "Simple Models Confidence interval plots")+theme(plot.title = element_text(hjust = 0.4,face = "bold"))
+```
+
+
+```{r, simple_models_residual plot}
+gg_tsresiduals(fit_simple_methods %>% select(Mean))
+gg_tsresiduals(fit_simple_methods %>% select(Naive))
+gg_tsresiduals(fit_simple_methods %>% select(Drift))
+gg_tsresiduals(fit_simple_methods %>% select(Seasonal_Naive))
+augment(fit_simple_methods) %>%  features(.resid, ljung_box, lag=24, dof=1) 
+```
+
+
+```{r}
+#appropriate method for ETS  is selected using auto 
+NY_LandTemperatures_train %>% model(ets_auto = ETS(avg_temp)) %>% components() %>% autoplot()+labs( x = 'Month year',title = "Aprropriate ETS decomposition")
+
+fit_ets <- NY_LandTemperatures_train %>% model(ets_auto = ETS(avg_temp)) 
+
+fit_ets %>% forecast(h = "6 years")%>% autoplot(NY_LandTemperatures_train,level = 90)+labs( x = 'Month year',y = "Temperature", title = "ETS Forecast")
+```
+
+```{r}
+report(fit_ets)
+gg_tsresiduals(fit_ets) 
+augment(fit_ets) %>%  features(.innov, ljung_box, lag=24, dof=18) 
+accuracy(fit_ets)
+accuracy(fit_ets %>% forecast(h = "6 year"),NY_LandTemperatures)
+```
+
+
+```{r}
+NY_LandTemperatures_train %>% features(avg_temp, unitroot_kpss)
+NY_LandTemperatures_train %>%features(avg_temp, unitroot_ndiffs)
+NY_LandTemperatures_train%>%gg_tsdisplay(avg_temp, plot_type='partial')
+NY_LandTemperatures_train%>%gg_tsdisplay(difference(avg_temp,12), plot_type='partial')
+NY_LandTemperatures_train %>%features(difference(avg_temp,12), unitroot_kpss)
+```
+
+
+```{r, finding_appropriate_ARIMA_2}
+pd_ARIMA_fit <- NY_LandTemperatures_train%>%model(a002 = ARIMA(avg_temp ~ pdq(0,0,2)),
+                                            a202 = ARIMA(avg_temp ~ pdq(2,0,2)),
+                                            a200 = ARIMA(avg_temp ~ pdq(2,0,0)),
+  sa002010 = ARIMA(avg_temp ~ pdq(0,0,2)+PDQ(0, 1, 0)),
+    sa200010 = ARIMA(avg_temp ~ pdq(2,0,0)+PDQ(0, 1, 0)),
+        sa202010 = ARIMA(avg_temp ~ pdq(2,0,2)+PDQ(0, 1, 0)),                                  
+        auto = ARIMA(avg_temp))
+
+glance(pd_ARIMA_fit) %>% arrange(AICc) %>% select(.model:BIC) 
+accuracy(pd_ARIMA_fit)
+```
+
+```{r, ARIMA_report_analysis}
+report(pd_ARIMA_fit[1])
+report(pd_ARIMA_fit[2])
+report(pd_ARIMA_fit[3])
+report(pd_ARIMA_fit[4])
+report(pd_ARIMA_fit[5])
+report(pd_ARIMA_fit[6])
+```
+
+```{r, advanced_ARIMA_check}
+gg_arma(pd_ARIMA_fit)
+```
+
+```{r, ARIMA_forecasting}
+forecast_ARIMA <- pd_ARIMA_fit[2] %>% forecast(h = "6 year")
+forecast_ARIMA %>% autoplot(NY_LandTemperatures_train,level = 90)+ labs( x = 'Month year',y = "Temperature", title = "Temperature Forecast with ARIMA")+theme(plot.title = element_text(hjust = 0.5,face = "bold"))+ facet_wrap(~.model)
+
+accuracy(forecast_ARIMA,NY_LandTemperatures)
+gg_tsresiduals(pd_ARIMA_fit[2])
+augment(pd_ARIMA_fit[2]) %>%  features(.innov, ljung_box, lag=24, dof=6)
+```
